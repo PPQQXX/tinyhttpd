@@ -37,24 +37,25 @@
 
 #define SERVER_STRING "Server: jdbhttpd/0.1.0\r\n"
 
-void accept_request(int);
-void bad_request(int);
-void cat(int, FILE *);
-void cannot_execute(int);
-void error_die(const char *);
-void execute_cgi(int, const char *, const char *, const char *);
-int get_line(int, char *, int);
-void headers(int, const char *);
-void not_found(int);
-void serve_file(int, const char *);
-int startup(u_short *);
-void unimplemented(int);
+void accept_request(void *); // 处理链接，子线程
+void bad_request(int);  // 400 错误
+void cat(int, FILE *);  // 处理文件，读取文件内容，并发送到客户端
+void cannot_execute(int);  // 500 错误处理函数
+void error_die(const char *);  // 错误处理函数处理
+void execute_cgi(int, const char *, const char *, const char *);  // 调用 CGI
+int get_line(int, char *, int);  // 从缓存区读取一行
+void headers(int, const char *);  // 服务器成功响应，返回200
+void not_found(int);  // 请求的内容不存在 404
+void serve_file(int, const char *);  // 处理文件请求
+int startup(u_short *);  // 初始化服务器
+void unimplemented(int);  // 501 仅实现了 get post 方法，其他方法处理函数
 
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
  * Parameters: the socket connected to the client */
 /**********************************************************************/
+// 处理链接，子线程
 void accept_request(int client)
 {
  char buf[1024];
@@ -67,20 +68,31 @@ void accept_request(int client)
  int cgi = 0;      /* becomes true if server decides this is a CGI
                     * program */
  char *query_string = NULL;
+ /* 添加 */
+ pthread_detach(pthread_self());  // 子线程分离，在这个线程结束后，
+                                     // 不需要其他的线程对他进行收尸
 
+   // 开始对服务器进行读 第一行
+    // get_line 就是解析 http 协议
+    // http 协议第一行，请求方法、空格符、url、空格符、协议版本,这是第一行
  //读http 请求的第一行数据（request line），把请求方法存进 method 中
  numchars = get_line(client, buf, sizeof(buf));
  i = 0; j = 0;
+  // 这个循环就是在找空格符，判断第 i 个字符是不是空格
+    // 并且，没有超过 method 缓冲的大小
+    // 至于减去一，是因为要在最后面加一个 ’\0‘ ,作为标识符
  while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
  {
-  method[i] = buf[j];
+  method[i] = buf[j]; // 不是空格，就复制到 method 里面
   i++; j++;
  }
  method[i] = '\0';
 
+    // 仅实现了 GET 和 PUT 方法，别的方法还没有实现
  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
  if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
  {
+  // 如果不是那两个方法，则调用 501 的错误处理函数
   unimplemented(client);
   return;
  }
@@ -89,6 +101,7 @@ void accept_request(int client)
  if (strcasecmp(method, "POST") == 0)
   cgi = 1;
 
+  // 下面该处理 url 了
  i = 0;
  //跳过所有的空白字符(空格)
  while (ISspace(buf[j]) && (j < sizeof(buf))) 
@@ -97,21 +110,25 @@ void accept_request(int client)
  //然后把 URL 读出来放到 url 数组中
  while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)))
  {
-  url[i] = buf[j];
+  url[i] = buf[j];// 如果不是空格的话，继续向 url 里进行复制，跟上面那个 method 方法一样
   i++; j++;
  }
- url[i] = '\0';
+ url[i] = '\0';// 读完后依然向最后加一个这个，以标识这是一个字符串
 
  //如果这个请求是一个 GET 方法的话
  if (strcasecmp(method, "GET") == 0)
  {
   //用一个指针指向 url
   query_string = url;
-  
+
+   // GET 方法，往往在 url 后面有 ？ 
   //去遍历这个 url，跳过字符 ？前面的所有字符，如果遍历完毕也没找到字符 ？则退出循环
   while ((*query_string != '?') && (*query_string != '\0'))
    query_string++;
-  
+
+   // 逐个字符寻找 ’？‘  ,如果找到问号了，说明就是 get 提交的数据
+        // 那么就需要 cgi 来处理数据，将 cgi 设置成 1
+        // 并将 query_string 指向 ’？‘ 后的内容
   //退出循环后检查当前的字符是 ？还是字符串(url)的结尾
   if (*query_string == '?')
   {
@@ -192,15 +209,17 @@ void bad_request(int client)
  * Parameters: the client socket descriptor
  *             FILE pointer for the file to cat */
 /**********************************************************************/
+// 处理文件，读取文件内容，并发送到客户端
 void cat(int client, FILE *resource)
 {
  char buf[1024];
 
+ // 逐行读取，遇到换行符 eof 就停止
  //从文件文件描述符中读取指定内容
  fgets(buf, sizeof(buf), resource);
- while (!feof(resource))
+ while (!feof(resource))// 是否已经读到了文件结尾，以确保读完整个文件
  {
-  send(client, buf, strlen(buf), 0);
+  send(client, buf, strlen(buf), 0);// 到结尾后，send 发送到客户端
   fgets(buf, sizeof(buf), resource);
  }
 }
@@ -209,6 +228,7 @@ void cat(int client, FILE *resource)
 /* Inform the client that a CGI script could not be executed.
  * Parameter: the client socket descriptor. */
 /**********************************************************************/
+// 500 错误处理函数
 void cannot_execute(int client)
 {
  char buf[1024];
@@ -256,7 +276,7 @@ void execute_cgi(int client, const char *path,
  
  //往 buf 中填东西以保证能进入下面的 while
  buf[0] = 'A'; buf[1] = '\0';
- //如果是 http 请求是 GET 方法的话读取并忽略请求剩下的内容
+ //如果是 http 请求是 GET 方法的话读取并忽略请求剩下的内容 // 判断是不是 get 方法 ，如果是，则丢弃头部信息
  if (strcasecmp(method, "GET") == 0)
   while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
    numchars = get_line(client, buf, sizeof(buf));
@@ -270,7 +290,7 @@ void execute_cgi(int client, const char *path,
   {
    buf[15] = '\0';
    if (strcasecmp(buf, "Content-Length:") == 0)
-    content_length = atoi(&(buf[16])); //记录 body 的长度大小
+    content_length = atoi(&(buf[16])); //记录 body 的长度大小  // 比较前 15 个字符，如果等于 Content-Length: ，则转化为 int
    numchars = get_line(client, buf, sizeof(buf));
   }
   
@@ -281,9 +301,18 @@ void execute_cgi(int client, const char *path,
   }
  }
 
- sprintf(buf, "HTTP/1.0 200 OK\r\n");
+ sprintf(buf, "HTTP/1.0 200 OK\r\n"); // 上面成功执行，则向服务器发送成功的响应头部
  send(client, buf, strlen(buf), 0);
 
+   // 初始化管道 
+    /*
+        管道是为了在子线程里面的 cgi 和服务器调用 cgi 程序进程间通信用
+
+        要创建两个管道
+        1. 子线程向服务器端写的一个管道
+        2. 子线程向服务器端读的一个管道
+    */
+ 
  //下面这里创建两个管道，用于两个进程间通信
  if (pipe(cgi_output) < 0) {
   cannot_execute(client);
@@ -296,45 +325,48 @@ void execute_cgi(int client, const char *path,
 
  //创建一个子进程
  if ( (pid = fork()) < 0 ) {
-  cannot_execute(client);
+  cannot_execute(client);// 错误就进行错误处理 
   return;
  }
  
  //子进程用来执行 cgi 脚本
- if (pid == 0)  /* child: CGI script */
+ if (pid == 0)  /* child: CGI script */ // 判断是否是子进程，进而进行处理
  {
   char meth_env[255];
   char query_env[255];
   char length_env[255];
 
   //dup2()包含<unistd.h>中，参读《TLPI》P97
-  //将子进程的输出由标准输出重定向到 cgi_ouput 的管道写端上
-  dup2(cgi_output[1], 1);
+  //将子进程的输出由标准输出重定向到 cgi_ouput 的管道写端上 
+  dup2(cgi_output[1], 1); // 1 文件 （ STDIN ）描述符重定向到管道写端
   //将子进程的输出由标准输入重定向到 cgi_ouput 的管道读端上
-  dup2(cgi_input[0], 0);
+  dup2(cgi_input[0], 0); // 0 文件（ STDOUT ）描述符重定向到管道读端
   //关闭 cgi_ouput 管道的读端与cgi_input 管道的写端
-  close(cgi_output[0]);
-  close(cgi_input[1]);
+  close(cgi_output[0]); // 关闭不必要的读写端
+  close(cgi_input[1]);// 子进程只需要从某一端读或某一端写，另一端是不需要的
+        // 之后通过 cgi 写内容的话，是直接写到那个管道里而不是写到终端（或显示器）上
   
   //构造一个环境变量
-  sprintf(meth_env, "REQUEST_METHOD=%s", method);
+  sprintf(meth_env, "REQUEST_METHOD=%s", method); // 把 REQUEST_METHOD 写到环境变量里面（ meth_env 这个变量可以写环境变量），是一种进行进程间通信的方式
   //putenv()包含于<stdlib.h>中，参读《TLPI》P128
   //将这个环境变量加进子进程的运行环境中
   putenv(meth_env);
   
   //根据http 请求的不同方法，构造并存储不同的环境变量
   if (strcasecmp(method, "GET") == 0) {
+   // 如果是 get 方式，则向环境变量中写 QUERY_STRING ，以便让 cgi 程序知道 query_string
    sprintf(query_env, "QUERY_STRING=%s", query_string);
    putenv(query_env);
   }
   else {   /* POST */
+   // 如果是 POST 方式。告诉 cgi 程序需要读多长的数据
    sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
    putenv(length_env);
   }
   
   //execl()包含于<unistd.h>中，参读《TLPI》P567
   //最后将子进程替换成另一个进程并执行 cgi 脚本
-  execl(path, path, NULL);
+  execl(path, path, NULL); // 处理完后，系统调用
   exit(0);
   
  } else {    /* parent */
